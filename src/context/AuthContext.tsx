@@ -21,6 +21,55 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
+  const resolveUserProfile = async (supabaseUser: any): Promise<User> => {
+    let profile = await fetchUserProfile(supabaseUser.id);
+    
+    // If trigger insertion was slightly delayed, retry after brief pause
+    if (!profile) {
+      await new Promise((r) => setTimeout(r, 400));
+      profile = await fetchUserProfile(supabaseUser.id);
+    }
+
+    // Construct metadata fallback profile if DB row fetch is pending
+    if (!profile) {
+      const fallbackName = supabaseUser.user_metadata?.name || 
+        supabaseUser.user_metadata?.full_name || 
+        supabaseUser.email?.split('@')[0] || 
+        'Citizen';
+      
+      const fallbackProfile: User = {
+        id: supabaseUser.id,
+        name: fallbackName,
+        email: supabaseUser.email || '',
+        phone: supabaseUser.user_metadata?.phone || '',
+        role: 'Citizen', // SECURITY MANDATE: Metadata fallback role is strictly Citizen
+        accountStatus: 'active',
+        createdAt: supabaseUser.created_at || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      // Ensure public.users table has the record
+      if (isSupabaseConfigured && supabase) {
+        try {
+          await supabase.from('users').upsert({
+            id: fallbackProfile.id,
+            name: fallbackProfile.name,
+            email: fallbackProfile.email,
+            phone: fallbackProfile.phone,
+            role: fallbackProfile.role,
+            account_status: 'active',
+          }, { onConflict: 'id' });
+        } catch (e) {
+          console.warn('Fallback profile database upsert notice:', e);
+        }
+      }
+
+      profile = fallbackProfile;
+    }
+
+    return profile;
+  };
+
   // Authoritative Session & Profile Initialization
   useEffect(() => {
     let mounted = true;
@@ -30,10 +79,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         try {
           const { data: { session } } = await supabase.auth.getSession();
           if (session?.user) {
-            const profile = await fetchUserProfile(session.user.id);
-            if (profile && mounted) {
-              setUser(profile);
-            }
+            const profile = await resolveUserProfile(session.user);
+            if (mounted) setUser(profile);
           }
         } catch (err) {
           console.warn('Session restoration failed:', err);
@@ -58,10 +105,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (isSupabaseConfigured && supabase) {
       const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
         if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && session?.user) {
-          const profile = await fetchUserProfile(session.user.id);
-          if (profile && mounted) {
-            setUser(profile);
-          }
+          const profile = await resolveUserProfile(session.user);
+          if (mounted) setUser(profile);
         } else if (event === 'SIGNED_OUT') {
           if (mounted) setUser(null);
           localStorage.removeItem('aquaguard_user');
@@ -91,25 +136,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       if (isSupabaseConfigured && supabase) {
         const { data, error } = await supabase.auth.signInWithPassword({
-          email,
+          email: email.trim(),
           password,
         });
 
-        if (!error && data.user) {
-          const profile = await fetchUserProfile(data.user.id);
-          if (profile) {
-            setUser(profile);
-            setIsLoading(false);
-            return { success: true, user: profile };
-          }
-        } else if (error) {
+        if (error) {
           setIsLoading(false);
+          const lowerMsg = error.message.toLowerCase();
+          if (lowerMsg.includes('email not confirmed')) {
+            return {
+              success: false,
+              message: 'Account email has not been confirmed. Please check your inbox for the confirmation link.',
+            };
+          }
           return { success: false, message: error.message };
+        }
+
+        if (data?.user) {
+          const profile = await resolveUserProfile(data.user);
+          setUser(profile);
+          setIsLoading(false);
+          return { success: true, user: profile };
         }
       }
 
-      // Offline demo login fallback
-      const matched = MOCK_USERS.find((u) => u.email.toLowerCase() === email.toLowerCase());
+      // Offline demo login fallback (Only active when Supabase is unconfigured)
+      const matched = MOCK_USERS.find((u) => u.email.toLowerCase() === email.trim().toLowerCase());
       if (matched) {
         setUser(matched);
         setIsLoading(false);
@@ -131,18 +183,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     password = 'password123'
   ): Promise<{ success: boolean; user?: User; message?: string }> => {
     setIsLoading(true);
-    // Security Rule: Public self-registration strictly creates Citizen accounts
     const citizenRole: UserRole = 'Citizen';
 
     if (isSupabaseConfigured && supabase) {
       try {
+        const cleanEmail = email.trim();
         const { data, error } = await supabase.auth.signUp({
-          email,
+          email: cleanEmail,
           password,
           options: {
             data: {
-              name,
-              phone,
+              name: name.trim(),
+              phone: phone.trim(),
               role: citizenRole,
             },
           },
@@ -154,19 +206,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         if (data.user) {
-          const newUser: User = {
-            id: data.user.id,
-            name,
-            email,
-            phone,
-            role: citizenRole,
-            accountStatus: 'active',
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          };
-          setUser(newUser);
+          const profile = await resolveUserProfile(data.user);
+          setUser(profile);
           setIsLoading(false);
-          return { success: true, user: newUser };
+          return { success: true, user: profile };
         }
       } catch (err: any) {
         setIsLoading(false);
@@ -177,9 +220,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Demo local registration fallback
     const mockNewUser: User = {
       id: `user-cit-${Date.now()}`,
-      name,
-      email,
-      phone,
+      name: name.trim(),
+      email: email.trim(),
+      phone: phone.trim(),
       role: citizenRole,
       accountStatus: 'active',
       createdAt: new Date().toISOString(),
@@ -202,7 +245,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const resetPassword = async (email: string): Promise<{ success: boolean; message?: string }> => {
     if (isSupabaseConfigured && supabase) {
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
         redirectTo: `${window.location.origin}/reset-password`,
       });
       if (error) return { success: false, message: error.message };

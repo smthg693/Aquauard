@@ -115,8 +115,8 @@ export const LoginPage: React.FC = () => {
           </Button>
         </form>
 
-        {/* Demo Fast Login for Offline / Dev Verification */}
-        {(!isSupabaseConfigured || import.meta.env.DEV) && (
+        {/* Demo Fast Login for Offline Mode Only */}
+        {!isSupabaseConfigured && (
           <div className="pt-4 border-t border-slate-200 space-y-3">
             <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
               <span>Fast Demo Account Login:</span>

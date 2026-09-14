@@ -58,8 +58,7 @@ export const LandingPage: React.FC = () => {
             </Button>
             <Button
               size="lg"
-              variant="outline"
-              className="bg-transparent text-white border-slate-400 hover:bg-navy-800 hover:border-slate-300"
+              variant="dark-outline"
               onClick={() => navigate('/login')}
             >
               Authority & Officer Portal

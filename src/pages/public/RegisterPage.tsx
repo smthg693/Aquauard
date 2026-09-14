@@ -28,7 +28,7 @@ export const RegisterPage: React.FC = () => {
     setIsSubmitting(true);
     setErrorMsg('');
 
-    const result = await register(name, email, phone);
+    const result = await register(name, email, phone, password);
     setIsSubmitting(false);
 
     if (result.success) {
