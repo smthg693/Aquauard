@@ -2,154 +2,225 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import type { User, UserRole } from '../types';
 import { MOCK_USERS } from '../lib/mockDataService';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { fetchUserProfile } from '../lib/services/users';
 
 interface AuthContextType {
   user: User | null;
   role: UserRole | null;
   isLoading: boolean;
-  login: (email: string, role?: UserRole) => Promise<boolean>;
-  register: (name: string, email: string, phone: string) => Promise<{ success: boolean; message?: string }>;
-  logout: () => void;
+  login: (email: string, password?: string) => Promise<{ success: boolean; user?: User; message?: string }>;
+  register: (name: string, email: string, phone: string, password?: string) => Promise<{ success: boolean; user?: User; message?: string }>;
+  logout: () => Promise<void>;
   switchRole: (role: UserRole) => void;
+  resetPassword: (email: string) => Promise<{ success: boolean; message?: string }>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Default logged in user to Citizen for smooth immediate preview, but can switch anytime
-  const [user, setUser] = useState<User | null>(() => {
-    const saved = localStorage.getItem('aquaguard_user');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        // Fallback
-      }
-    }
-    return MOCK_USERS[0]; // Aarav Patel (Citizen)
-  });
+  const [user, setUser] = useState<User | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  const [isLoading, setIsLoading] = useState<boolean>(false);
+  // Authoritative Session & Profile Initialization
+  useEffect(() => {
+    let mounted = true;
+
+    async function initSession() {
+      if (isSupabaseConfigured && supabase) {
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session?.user) {
+            const profile = await fetchUserProfile(session.user.id);
+            if (profile && mounted) {
+              setUser(profile);
+            }
+          }
+        } catch (err) {
+          console.warn('Session restoration failed:', err);
+        }
+      } else {
+        // Dev offline fallback check
+        const saved = localStorage.getItem('aquaguard_user');
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved);
+            if (mounted) setUser(parsed);
+          } catch (e) {
+            // Ignore parse errors
+          }
+        }
+      }
+      if (mounted) setIsLoading(false);
+    }
+
+    initSession();
+
+    if (isSupabaseConfigured && supabase) {
+      const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+        if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && session?.user) {
+          const profile = await fetchUserProfile(session.user.id);
+          if (profile && mounted) {
+            setUser(profile);
+          }
+        } else if (event === 'SIGNED_OUT') {
+          if (mounted) setUser(null);
+          localStorage.removeItem('aquaguard_user');
+        }
+      });
+
+      return () => {
+        mounted = false;
+        subscription.unsubscribe();
+      };
+    }
+  }, []);
 
   useEffect(() => {
-    if (user) {
+    if (!isSupabaseConfigured && user) {
       localStorage.setItem('aquaguard_user', JSON.stringify(user));
-    } else {
+    } else if (!isSupabaseConfigured && !user) {
       localStorage.removeItem('aquaguard_user');
     }
   }, [user]);
 
-  const login = async (email: string, overrideRole?: UserRole): Promise<boolean> => {
+  const login = async (
+    email: string,
+    password = 'password123'
+  ): Promise<{ success: boolean; user?: User; message?: string }> => {
     setIsLoading(true);
     try {
       if (isSupabaseConfigured && supabase) {
-        // Supabase authentication logic if configured
         const { data, error } = await supabase.auth.signInWithPassword({
           email,
-          password: 'password123',
+          password,
         });
+
         if (!error && data.user) {
-          // Fetch role from users table
-          const { data: userData } = await supabase
-            .from('users')
-            .select('*')
-            .eq('id', data.user.id)
-            .single();
-            
-          if (userData) {
-            setUser({
-              id: userData.id,
-              name: userData.name,
-              email: userData.email,
-              phone: userData.phone,
-              role: userData.role,
-              accountStatus: userData.account_status,
-              createdAt: userData.created_at,
-              updatedAt: userData.updated_at,
-            });
+          const profile = await fetchUserProfile(data.user.id);
+          if (profile) {
+            setUser(profile);
             setIsLoading(false);
-            return true;
+            return { success: true, user: profile };
           }
+        } else if (error) {
+          setIsLoading(false);
+          return { success: false, message: error.message };
         }
       }
 
-      // Fallback mock login for fast offline demo
-      const matched = MOCK_USERS.find(u => u.email.toLowerCase() === email.toLowerCase());
+      // Offline demo login fallback
+      const matched = MOCK_USERS.find((u) => u.email.toLowerCase() === email.toLowerCase());
       if (matched) {
         setUser(matched);
         setIsLoading(false);
-        return true;
-      } else if (overrideRole) {
-        // Generate role-specific session for testing
-        const newDemoUser: User = {
-          id: `demo-${Date.now()}`,
-          name: `${overrideRole} User`,
-          email: email || `${overrideRole.toLowerCase().replace(' ', '')}@aquaguard.gov.in`,
-          role: overrideRole,
-          accountStatus: 'active',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-        setUser(newDemoUser);
-        setIsLoading(false);
-        return true;
+        return { success: true, user: matched };
       }
 
       setIsLoading(false);
-      return false;
-    } catch (err) {
+      return { success: false, message: 'Invalid credentials. Please check your email and password.' };
+    } catch (err: any) {
       setIsLoading(false);
-      return false;
+      return { success: false, message: err.message || 'Login attempt failed' };
     }
   };
 
-  const register = async (name: string, email: string, phone: string): Promise<{ success: boolean; message?: string }> => {
+  const register = async (
+    name: string,
+    email: string,
+    phone: string,
+    password = 'password123'
+  ): Promise<{ success: boolean; user?: User; message?: string }> => {
     setIsLoading(true);
-    // STRICT SECURITY RULE: Public registration can ONLY assign 'Citizen' role.
-    const newUser: User = {
+    // Security Rule: Public self-registration strictly creates Citizen accounts
+    const citizenRole: UserRole = 'Citizen';
+
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              name,
+              phone,
+              role: citizenRole,
+            },
+          },
+        });
+
+        if (error) {
+          setIsLoading(false);
+          return { success: false, message: error.message };
+        }
+
+        if (data.user) {
+          const newUser: User = {
+            id: data.user.id,
+            name,
+            email,
+            phone,
+            role: citizenRole,
+            accountStatus: 'active',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          setUser(newUser);
+          setIsLoading(false);
+          return { success: true, user: newUser };
+        }
+      } catch (err: any) {
+        setIsLoading(false);
+        return { success: false, message: err.message || 'Registration failed' };
+      }
+    }
+
+    // Demo local registration fallback
+    const mockNewUser: User = {
       id: `user-cit-${Date.now()}`,
       name,
       email,
       phone,
-      role: 'Citizen', // Hardcoded security boundary
+      role: citizenRole,
       accountStatus: 'active',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-
-    if (isSupabaseConfigured && supabase) {
-      const { error } = await supabase.from('users').insert({
-        name,
-        email,
-        phone,
-        role: 'Citizen', // RLS & DB Trigger enforces this
-      });
-      if (error) {
-        setIsLoading(false);
-        return { success: false, message: error.message };
-      }
-    }
-
-    setUser(newUser);
+    setUser(mockNewUser);
     setIsLoading(false);
-    return { success: true };
+    return { success: true, user: mockNewUser };
   };
 
-  const logout = () => {
+  const logout = async () => {
+    setIsLoading(true);
     if (isSupabaseConfigured && supabase) {
-      supabase.auth.signOut();
+      await supabase.auth.signOut();
     }
     setUser(null);
     localStorage.removeItem('aquaguard_user');
+    setIsLoading(false);
+  };
+
+  const resetPassword = async (email: string): Promise<{ success: boolean; message?: string }> => {
+    if (isSupabaseConfigured && supabase) {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/reset-password`,
+      });
+      if (error) return { success: false, message: error.message };
+    }
+    return { success: true, message: 'Password reset link sent to your email.' };
   };
 
   const switchRole = (newRole: UserRole) => {
-    const roleUser = MOCK_USERS.find(u => u.role === newRole) || {
-      id: `user-${newRole.toLowerCase().replace(' ', '')}`,
+    if (isSupabaseConfigured) {
+      console.warn('Security alert: Role switching is disabled in production Supabase RBAC mode.');
+      return;
+    }
+    const roleUser = MOCK_USERS.find((u) => u.role === newRole) || {
+      id: `user-${newRole.toLowerCase().replace(/\s+/g, '')}`,
       name: `${newRole} Official`,
-      email: `${newRole.toLowerCase().replace(' ', '')}@aquaguard.gov.in`,
+      email: `${newRole.toLowerCase().replace(/\s+/g, '')}@aquaguard.gov.in`,
       role: newRole,
-      accountStatus: 'active',
+      accountStatus: 'active' as const,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -166,6 +237,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         register,
         logout,
         switchRole,
+        resetPassword,
       }}
     >
       {children}

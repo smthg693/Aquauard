@@ -14,7 +14,14 @@ export const RoleGuard: React.FC<RoleGuardProps> = ({ allowedRoles, children }) 
   const location = useLocation();
 
   if (isLoading) {
-    return <div className="p-8 text-center text-xs text-slate-500">Authenticating session privileges...</div>;
+    return (
+      <div className="min-h-screen bg-surface-bg flex items-center justify-center p-6 text-center text-xs text-slate-500 font-medium">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-6 h-6 border-2 border-cyan-600 border-t-transparent rounded-full animate-spin" />
+          <p className="text-slate-600 font-semibold">Authenticating session privileges...</p>
+        </div>
+      </div>
+    );
   }
 
   if (!user || !role) {

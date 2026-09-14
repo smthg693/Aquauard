@@ -6,6 +6,7 @@ import { Input } from '../../components/ui/Input';
 import { Button } from '../../components/ui/Button';
 import { Droplet, Lock, Mail, Shield, User, Building2, Wrench, ShieldAlert } from 'lucide-react';
 import type { UserRole } from '../../types';
+import { isSupabaseConfigured } from '../../lib/supabase';
 
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
@@ -15,26 +16,44 @@ export const LoginPage: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
+  const getDashboardForRole = (role: UserRole): string => {
+    switch (role) {
+      case 'Authority':
+        return '/authority/dashboard';
+      case 'Field Officer':
+        return '/field-officer/dashboard';
+      case 'Admin':
+        return '/admin/dashboard';
+      case 'Citizen':
+      default:
+        return '/citizen/dashboard';
+    }
+  };
+
   const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
     setErrorMsg('');
 
-    const success = await login(email);
+    const res = await login(email, password);
     setIsSubmitting(false);
 
-    if (success) {
-      navigate('/citizen/dashboard');
+    if (res.success && res.user) {
+      navigate(getDashboardForRole(res.user.role));
     } else {
-      setErrorMsg('Invalid authentication credentials or user account does not exist.');
+      setErrorMsg(res.message || 'Invalid credentials or user account does not exist.');
     }
   };
 
-  const handleQuickDemoLogin = async (role: UserRole, demoEmail: string, route: string) => {
+  const handleQuickDemoLogin = async (demoEmail: string) => {
     setIsSubmitting(true);
-    await login(demoEmail, role);
+    const res = await login(demoEmail, 'password123');
     setIsSubmitting(false);
-    navigate(route);
+    if (res.success && res.user) {
+      navigate(getDashboardForRole(res.user.role));
+    } else {
+      setErrorMsg(res.message || 'Demo user login failed.');
+    }
   };
 
   return (
@@ -96,58 +115,64 @@ export const LoginPage: React.FC = () => {
           </Button>
         </form>
 
-        {/* Preset Role Quick-Logins for Foundation Verification */}
-        <div className="pt-4 border-t border-slate-200 space-y-3">
-          <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-            <span>Fast Role Verification Login:</span>
+        {/* Demo Fast Login for Offline / Dev Verification */}
+        {(!isSupabaseConfigured || import.meta.env.DEV) && (
+          <div className="pt-4 border-t border-slate-200 space-y-3">
+            <div className="flex items-center justify-between text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+              <span>Fast Demo Account Login:</span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => handleQuickDemoLogin('citizen@aquaguard.gov.in')}
+                className="flex items-center gap-2 p-2 rounded bg-slate-50 hover:bg-cyan-50 border border-slate-200 hover:border-cyan-300 text-left transition-colors text-xs"
+              >
+                <User className="w-4 h-4 text-cyan-600 shrink-0" />
+                <div>
+                  <p className="font-semibold text-agText-primary leading-none">Citizen</p>
+                  <p className="text-[10px] text-slate-400 mt-0.5">Report & Track</p>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleQuickDemoLogin('authority@aquaguard.gov.in')}
+                className="flex items-center gap-2 p-2 rounded bg-slate-50 hover:bg-navy-50 border border-slate-200 hover:border-navy-300 text-left transition-colors text-xs"
+              >
+                <Building2 className="w-4 h-4 text-navy-700 shrink-0" />
+                <div>
+                  <p className="font-semibold text-agText-primary leading-none">Authority</p>
+                  <p className="text-[10px] text-slate-400 mt-0.5">Queue & Assign</p>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleQuickDemoLogin('officer@aquaguard.gov.in')}
+                className="flex items-center gap-2 p-2 rounded bg-slate-50 hover:bg-amber-50 border border-slate-200 hover:border-amber-300 text-left transition-colors text-xs"
+              >
+                <Wrench className="w-4 h-4 text-amber-600 shrink-0" />
+                <div>
+                  <p className="font-semibold text-agText-primary leading-none">Field Officer</p>
+                  <p className="text-[10px] text-slate-400 mt-0.5">Resolve & Update</p>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleQuickDemoLogin('admin@aquaguard.gov.in')}
+                className="flex items-center gap-2 p-2 rounded bg-slate-50 hover:bg-purple-50 border border-slate-200 hover:border-purple-300 text-left transition-colors text-xs"
+              >
+                <Shield className="w-4 h-4 text-purple-600 shrink-0" />
+                <div>
+                  <p className="font-semibold text-agText-primary leading-none">Admin</p>
+                  <p className="text-[10px] text-slate-400 mt-0.5">System Config</p>
+                </div>
+              </button>
+            </div>
           </div>
-
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              onClick={() => handleQuickDemoLogin('Citizen', 'citizen@aquaguard.gov.in', '/citizen/dashboard')}
-              className="flex items-center gap-2 p-2 rounded bg-slate-50 hover:bg-cyan-50 border border-slate-200 hover:border-cyan-300 text-left transition-colors text-xs"
-            >
-              <User className="w-4 h-4 text-cyan-600 shrink-0" />
-              <div>
-                <p className="font-semibold text-agText-primary leading-none">Citizen</p>
-                <p className="text-[10px] text-slate-400 mt-0.5">Report & Track</p>
-              </div>
-            </button>
-
-            <button
-              onClick={() => handleQuickDemoLogin('Authority', 'authority@aquaguard.gov.in', '/authority/dashboard')}
-              className="flex items-center gap-2 p-2 rounded bg-slate-50 hover:bg-navy-50 border border-slate-200 hover:border-navy-300 text-left transition-colors text-xs"
-            >
-              <Building2 className="w-4 h-4 text-navy-700 shrink-0" />
-              <div>
-                <p className="font-semibold text-agText-primary leading-none">Authority</p>
-                <p className="text-[10px] text-slate-400 mt-0.5">Queue & Assign</p>
-              </div>
-            </button>
-
-            <button
-              onClick={() => handleQuickDemoLogin('Field Officer', 'officer@aquaguard.gov.in', '/field-officer/dashboard')}
-              className="flex items-center gap-2 p-2 rounded bg-slate-50 hover:bg-amber-50 border border-slate-200 hover:border-amber-300 text-left transition-colors text-xs"
-            >
-              <Wrench className="w-4 h-4 text-amber-600 shrink-0" />
-              <div>
-                <p className="font-semibold text-agText-primary leading-none">Field Officer</p>
-                <p className="text-[10px] text-slate-400 mt-0.5">Resolve & Update</p>
-              </div>
-            </button>
-
-            <button
-              onClick={() => handleQuickDemoLogin('Admin', 'admin@aquaguard.gov.in', '/admin/dashboard')}
-              className="flex items-center gap-2 p-2 rounded bg-slate-50 hover:bg-purple-50 border border-slate-200 hover:border-purple-300 text-left transition-colors text-xs"
-            >
-              <Shield className="w-4 h-4 text-purple-600 shrink-0" />
-              <div>
-                <p className="font-semibold text-agText-primary leading-none">Admin</p>
-                <p className="text-[10px] text-slate-400 mt-0.5">System Config</p>
-              </div>
-            </button>
-          </div>
-        </div>
+        )}
 
         <div className="text-center text-xs text-agText-muted pt-2 border-t border-slate-100">
           New citizen user?{' '}

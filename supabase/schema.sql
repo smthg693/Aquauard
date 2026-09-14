@@ -1,17 +1,41 @@
 -- ============================================================================
 -- AQUAGUARD DATABASE SCHEMA & ROW LEVEL SECURITY (RLS) POLICIES
 -- Target DB: PostgreSQL via Supabase
--- Description: Complete production schema, state machine rules, triggers, seed data, and RLS.
+-- Description: Complete production schema, state machine rules, triggers, seed data, and hardened RLS.
 -- ============================================================================
 
 -- 1. ENUMS & EXTENSIONS
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
-CREATE TYPE user_role AS ENUM ('Citizen', 'Authority', 'Field Officer', 'Admin');
-CREATE TYPE account_status AS ENUM ('active', 'suspended', 'pending_approval');
-CREATE TYPE complaint_severity AS ENUM ('Low', 'Medium', 'High', 'Critical');
-CREATE TYPE complaint_status AS ENUM ('Submitted', 'Acknowledged', 'Assigned', 'In Progress', 'Resolved', 'Closed');
-CREATE TYPE officer_status AS ENUM ('available', 'on_field', 'off_duty');
+DO $$ BEGIN
+    CREATE TYPE user_role AS ENUM ('Citizen', 'Authority', 'Field Officer', 'Admin');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE account_status AS ENUM ('active', 'suspended', 'pending_approval');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE complaint_severity AS ENUM ('Low', 'Medium', 'High', 'Critical');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE complaint_status AS ENUM ('Submitted', 'Acknowledged', 'Assigned', 'In Progress', 'Resolved', 'Closed');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE officer_status AS ENUM ('available', 'on_field', 'off_duty');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
 -- 2. TABLES DEFINITION
 
@@ -172,14 +196,45 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
 DROP TRIGGER IF EXISTS trg_log_complaint_status ON public.complaints;
-CREATE TRIGGER trg_log_complaint_status
-AFTER INSERT OR BEFORE UPDATE ON public.complaints
+DROP TRIGGER IF EXISTS trg_log_complaint_insert ON public.complaints;
+CREATE TRIGGER trg_log_complaint_insert
+AFTER INSERT ON public.complaints
 FOR EACH ROW EXECUTE FUNCTION log_complaint_status_change();
 
--- 4. CATEGORIES SEED DATA
+DROP TRIGGER IF EXISTS trg_log_complaint_update ON public.complaints;
+CREATE TRIGGER trg_log_complaint_update
+BEFORE UPDATE ON public.complaints
+FOR EACH ROW EXECUTE FUNCTION log_complaint_status_change();
+
+-- 4. AUTOMATIC NEW USER REGISTRATION TRIGGER (ROLE SECURITY BOUNDARY)
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO public.users (id, name, email, phone, role, account_status)
+  VALUES (
+    NEW.id,
+    COALESCE(NEW.raw_user_meta_data->>'name', NEW.raw_user_meta_data->>'full_name', SPLIT_PART(NEW.email, '@', 1)),
+    NEW.email,
+    NEW.raw_user_meta_data->>'phone',
+    'Citizen', -- SECURITY MANDATE: Public registrations default strictly to Citizen
+    'active'
+  )
+  ON CONFLICT (id) DO UPDATE SET
+    email = EXCLUDED.email,
+    name = COALESCE(EXCLUDED.name, public.users.name);
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- 5. CATEGORIES SEED DATA
 INSERT INTO public.categories (name, description, is_active) VALUES
   ('Water Shortage', 'Complete lack of water supply or severe restriction in scheduled timing.', true),
   ('Pipeline Leakage', 'Main line or street pipe leakage causing major water wastage.', true),
@@ -192,7 +247,7 @@ INSERT INTO public.categories (name, description, is_active) VALUES
   ('Other', 'General water infrastructure issues not covered above.', true)
 ON CONFLICT (name) DO NOTHING;
 
--- 5. ROW LEVEL SECURITY (RLS) POLICIES
+-- 6. ROW LEVEL SECURITY (RLS) POLICIES — PRODUCTION HARDENED & STRICTLY SCOPED
 
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.authorities ENABLE ROW LEVEL SECURITY;
@@ -205,22 +260,50 @@ ALTER TABLE public.assignments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
 
--- Helper function to get current user role safely
+-- Helper function to get current user role safely without RLS recursion
 CREATE OR REPLACE FUNCTION public.get_current_role()
 RETURNS user_role AS $$
-  SELECT role FROM public.users WHERE id = auth.uid();
-$$ LANGUAGE sql STABLE SECURITY DEFINER;
+DECLARE
+  u_role user_role;
+BEGIN
+  SELECT role INTO u_role FROM public.users WHERE id = auth.uid();
+  RETURN u_role;
+END;
+$$ LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = public, pg_temp;
 
--- 5.1 USERS RLS
+-- 6.1 USERS RLS
+DROP POLICY IF EXISTS "Users can view own profile or Admins view all" ON public.users;
+DROP POLICY IF EXISTS "Users can update own profile" ON public.users;
+DROP POLICY IF EXISTS "Users can insert own record on registration" ON public.users;
+
 CREATE POLICY "Users can view own profile or Admins view all"
   ON public.users FOR SELECT
-  USING (id = auth.uid() OR public.get_current_role() IN ('Admin', 'Authority'));
+  USING (
+    id = auth.uid() OR 
+    EXISTS (
+      SELECT 1 FROM public.users u
+      WHERE u.id = auth.uid() AND u.role IN ('Admin', 'Authority')
+    )
+  );
 
 CREATE POLICY "Users can update own profile"
   ON public.users FOR UPDATE
   USING (id = auth.uid());
 
--- 5.2 CATEGORIES RLS
+CREATE POLICY "Users can insert own record on registration"
+  ON public.users FOR INSERT
+  WITH CHECK (id = auth.uid() AND role = 'Citizen');
+
+-- 6.2 OFFICERS RLS
+DROP POLICY IF EXISTS "Officers readable by authenticated users" ON public.officers;
+CREATE POLICY "Officers readable by authenticated users"
+  ON public.officers FOR SELECT
+  USING (auth.role() = 'authenticated');
+
+-- 6.3 CATEGORIES RLS
+DROP POLICY IF EXISTS "Categories are readable by everyone" ON public.categories;
+DROP POLICY IF EXISTS "Only Admins manage categories" ON public.categories;
+
 CREATE POLICY "Categories are readable by everyone"
   ON public.categories FOR SELECT
   USING (true);
@@ -229,11 +312,16 @@ CREATE POLICY "Only Admins manage categories"
   ON public.categories FOR ALL
   USING (public.get_current_role() = 'Admin');
 
--- 5.3 COMPLAINTS RLS
-CREATE POLICY "Citizens view only their own complaints"
+-- 6.4 COMPLAINTS RLS
+DROP POLICY IF EXISTS "Citizens view only their own complaints" ON public.complaints;
+DROP POLICY IF EXISTS "Complaints select access by role" ON public.complaints;
+DROP POLICY IF EXISTS "Citizens can create complaints" ON public.complaints;
+DROP POLICY IF EXISTS "Authority and Officers can update permitted complaint states" ON public.complaints;
+
+CREATE POLICY "Complaints select access by role"
   ON public.complaints FOR SELECT
   USING (
-    (public.get_current_role() = 'Citizen' AND citizen_id = auth.uid()) OR
+    (citizen_id = auth.uid()) OR
     (public.get_current_role() IN ('Authority', 'Admin')) OR
     (public.get_current_role() = 'Field Officer' AND assigned_officer_id IN (
       SELECT id FROM public.officers WHERE user_id = auth.uid()
@@ -242,7 +330,10 @@ CREATE POLICY "Citizens view only their own complaints"
 
 CREATE POLICY "Citizens can create complaints"
   ON public.complaints FOR INSERT
-  WITH CHECK (public.get_current_role() = 'Citizen' AND citizen_id = auth.uid());
+  WITH CHECK (
+    citizen_id = auth.uid() AND
+    public.get_current_role() = 'Citizen'
+  );
 
 CREATE POLICY "Authority and Officers can update permitted complaint states"
   ON public.complaints FOR UPDATE
@@ -253,7 +344,43 @@ CREATE POLICY "Authority and Officers can update permitted complaint states"
     ))
   );
 
--- 5.4 COMPLAINT STATUS EVENTS RLS
+-- 6.5 EVIDENCE RLS
+DROP POLICY IF EXISTS "Users can view evidence on authorized complaints" ON public.evidence;
+DROP POLICY IF EXISTS "Evidence readable by authorized complaint viewers" ON public.evidence;
+DROP POLICY IF EXISTS "Users can upload evidence for authorized complaints" ON public.evidence;
+
+CREATE POLICY "Evidence readable by authorized complaint viewers"
+  ON public.evidence FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.complaints c
+      WHERE c.id = evidence.complaint_id
+      AND (
+        (c.citizen_id = auth.uid()) OR
+        (public.get_current_role() IN ('Authority', 'Admin', 'Field Officer'))
+      )
+    )
+  );
+
+CREATE POLICY "Users can upload evidence for authorized complaints"
+  ON public.evidence FOR INSERT
+  WITH CHECK (
+    uploaded_by = auth.uid() AND
+    EXISTS (
+      SELECT 1 FROM public.complaints c
+      WHERE c.id = evidence.complaint_id
+      AND (
+        c.citizen_id = auth.uid() OR
+        public.get_current_role() IN ('Authority', 'Admin', 'Field Officer')
+      )
+    )
+  );
+
+-- 6.6 COMPLAINT STATUS EVENTS RLS (APPEND-ONLY HISTORY AUDIT)
+DROP POLICY IF EXISTS "Status events viewable by authorized complaint viewers" ON public.complaint_status_events;
+DROP POLICY IF EXISTS "Status events insertable by logged in users" ON public.complaint_status_events;
+DROP POLICY IF EXISTS "Status events insertable during complaint workflow" ON public.complaint_status_events;
+
 CREATE POLICY "Status events viewable by authorized complaint viewers"
   ON public.complaint_status_events FOR SELECT
   USING (
@@ -261,22 +388,57 @@ CREATE POLICY "Status events viewable by authorized complaint viewers"
       SELECT 1 FROM public.complaints c
       WHERE c.id = complaint_status_events.complaint_id
       AND (
-        (public.get_current_role() = 'Citizen' AND c.citizen_id = auth.uid()) OR
-        (public.get_current_role() IN ('Authority', 'Admin')) OR
-        (public.get_current_role() = 'Field Officer')
+        (c.citizen_id = auth.uid()) OR
+        (public.get_current_role() IN ('Authority', 'Admin', 'Field Officer'))
       )
     )
   );
 
--- 5.5 NOTES RLS
-CREATE POLICY "Citizens view non-internal notes on their complaints"
+CREATE POLICY "Status events insertable during complaint workflow"
+  ON public.complaint_status_events FOR INSERT
+  WITH CHECK (
+    updated_by = auth.uid() AND
+    EXISTS (
+      SELECT 1 FROM public.complaints c
+      WHERE c.id = complaint_status_events.complaint_id
+      AND (
+        c.citizen_id = auth.uid() OR
+        public.get_current_role() IN ('Authority', 'Admin', 'Field Officer')
+      )
+    )
+  );
+
+-- 6.7 ASSIGNMENTS RLS
+DROP POLICY IF EXISTS "Assignments viewable by authenticated users" ON public.assignments;
+DROP POLICY IF EXISTS "Authorities manage assignments" ON public.assignments;
+
+CREATE POLICY "Assignments viewable by authenticated users"
+  ON public.assignments FOR SELECT
+  USING (
+    public.get_current_role() IN ('Authority', 'Admin') OR
+    officer_id IN (SELECT id FROM public.officers WHERE user_id = auth.uid())
+  );
+
+CREATE POLICY "Authorities manage assignments"
+  ON public.assignments FOR INSERT
+  WITH CHECK (
+    assigned_by = auth.uid() AND
+    public.get_current_role() IN ('Authority', 'Admin')
+  );
+
+-- 6.8 NOTES RLS
+DROP POLICY IF EXISTS "Citizens view non-internal notes on their complaints" ON public.notes;
+DROP POLICY IF EXISTS "Notes viewable by authorized role" ON public.notes;
+DROP POLICY IF EXISTS "Authorized personnel can add notes" ON public.notes;
+
+CREATE POLICY "Notes viewable by authorized role"
   ON public.notes FOR SELECT
   USING (
     EXISTS (
       SELECT 1 FROM public.complaints c
       WHERE c.id = notes.complaint_id
       AND (
-        (public.get_current_role() = 'Citizen' AND c.citizen_id = auth.uid() AND is_internal = false) OR
+        (c.citizen_id = auth.uid() AND is_internal = false) OR
         (public.get_current_role() IN ('Authority', 'Admin', 'Field Officer'))
       )
     )
@@ -287,11 +449,18 @@ CREATE POLICY "Authorized personnel can add notes"
   WITH CHECK (
     author_id = auth.uid() AND (
       public.get_current_role() IN ('Authority', 'Admin', 'Field Officer') OR
-      (public.get_current_role() = 'Citizen' AND is_internal = false)
+      (public.get_current_role() = 'Citizen' AND is_internal = false AND EXISTS (
+        SELECT 1 FROM public.complaints c
+        WHERE c.id = notes.complaint_id AND c.citizen_id = auth.uid()
+      ))
     )
   );
 
--- 5.6 NOTIFICATIONS RLS
+-- 6.9 NOTIFICATIONS RLS
+DROP POLICY IF EXISTS "Users view only their own notifications" ON public.notifications;
+DROP POLICY IF EXISTS "Users update their own notifications" ON public.notifications;
+DROP POLICY IF EXISTS "System can insert notifications" ON public.notifications;
+
 CREATE POLICY "Users view only their own notifications"
   ON public.notifications FOR SELECT
   USING (user_id = auth.uid());
@@ -299,3 +468,25 @@ CREATE POLICY "Users view only their own notifications"
 CREATE POLICY "Users update their own notifications"
   ON public.notifications FOR UPDATE
   USING (user_id = auth.uid());
+
+CREATE POLICY "System can insert notifications"
+  ON public.notifications FOR INSERT
+  WITH CHECK (
+    user_id = auth.uid() OR
+    public.get_current_role() IN ('Authority', 'Admin', 'Field Officer')
+  );
+
+-- 7. STORAGE BUCKET POLICIES FOR 'evidence' BUCKET
+INSERT INTO storage.buckets (id, name, public) 
+VALUES ('evidence', 'evidence', true)
+ON CONFLICT (id) DO NOTHING;
+
+DROP POLICY IF EXISTS "Evidence storage select for authenticated users" ON storage.objects;
+CREATE POLICY "Evidence storage select for authenticated users"
+  ON storage.objects FOR SELECT
+  USING (bucket_id = 'evidence' AND auth.role() = 'authenticated');
+
+DROP POLICY IF EXISTS "Evidence storage upload for authenticated users" ON storage.objects;
+CREATE POLICY "Evidence storage upload for authenticated users"
+  ON storage.objects FOR INSERT
+  WITH CHECK (bucket_id = 'evidence' AND auth.role() = 'authenticated');

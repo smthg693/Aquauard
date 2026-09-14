@@ -3,10 +3,16 @@ import { useAuth } from '../../context/AuthContext';
 import type { UserRole } from '../../types';
 import { Shield } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { isSupabaseConfigured } from '../../lib/supabase';
 
 export const DemoRoleSwitcher: React.FC = () => {
   const { role, switchRole } = useAuth();
   const navigate = useNavigate();
+
+  // SECURITY GUARD: Never render in Production or Live Supabase RBAC environment
+  if (import.meta.env.PROD || isSupabaseConfigured) {
+    return null;
+  }
 
   const roles: { key: UserRole; label: string; defaultRoute: string }[] = [
     { key: 'Citizen', label: 'Citizen', defaultRoute: '/citizen/dashboard' },
@@ -24,11 +30,11 @@ export const DemoRoleSwitcher: React.FC = () => {
     <div className="bg-navy-900 text-white text-xs px-4 py-1.5 flex items-center justify-between border-b border-navy-800 flex-wrap gap-2">
       <div className="flex items-center gap-2 text-cyan-300 font-medium">
         <Shield className="w-3.5 h-3.5 text-cyan-400" />
-        <span className="font-semibold tracking-wide uppercase text-[10px]">AquaGuard RBAC Environment:</span>
+        <span className="font-semibold tracking-wide uppercase text-[10px]">Dev Preview Mode:</span>
       </div>
 
       <div className="flex items-center gap-1.5 flex-wrap">
-        <span className="text-slate-400 text-[11px] mr-1">Active Role:</span>
+        <span className="text-slate-400 text-[11px] mr-1">Switch Role:</span>
         {roles.map((r) => {
           const isActive = role === r.key;
           return (

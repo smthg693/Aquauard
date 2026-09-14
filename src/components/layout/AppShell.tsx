@@ -2,14 +2,15 @@ import React, { useState } from 'react';
 import { Sidebar } from './Sidebar';
 import { TopBar } from './TopBar';
 import { DemoRoleSwitcher } from './DemoRoleSwitcher';
+import { isSupabaseConfigured } from '../../lib/supabase';
 
 export const AppShell: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   return (
     <div className="min-h-screen bg-surface-bg flex flex-col font-sans text-agText-primary">
-      {/* Top RBAC Demo Switcher Banner */}
-      <DemoRoleSwitcher />
+      {/* Dev-only offline preview banner (Disabled in production & Live Supabase mode) */}
+      {import.meta.env.DEV && !isSupabaseConfigured && <DemoRoleSwitcher />}
 
       <div className="flex-1 flex overflow-hidden">
         {/* Left Sidebar */}
