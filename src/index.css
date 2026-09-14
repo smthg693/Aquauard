@@ -1,0 +1,103 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-navy-900: #051329;
+  --color-navy-800: #071C38;
+  --color-navy-700: #0B2545;
+  --color-navy-600: #13345C;
+  --color-navy-500: #1E4675;
+  --color-navy-100: #E6EEF8;
+  --color-navy-50: #F0F5FC;
+
+  --color-cyan-700: #1D8096;
+  --color-cyan-600: #2596AE;
+  --color-cyan-500: #2EA9C4;
+  --color-cyan-400: #4DC1DA;
+  --color-cyan-100: #E2F5F9;
+  --color-cyan-50: #F0FAF8;
+
+  --color-agText-primary: #1A2733;
+  --color-agText-secondary: #4A5568;
+  --color-agText-muted: #718096;
+  --color-surface-bg: #F7FAFC;
+
+  --color-agStatus-success: #1F9D63;
+  --color-agStatus-warning: #DB8A1E;
+  --color-agStatus-danger: #D6493C;
+
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  --shadow-subtle: 0 1px 3px 0 rgba(11, 37, 69, 0.05);
+  --shadow-raised: 0 4px 6px -1px rgba(11, 37, 69, 0.08), 0 2px 4px -1px rgba(11, 37, 69, 0.04);
+  --shadow-modal: 0 20px 25px -5px rgba(11, 37, 69, 0.12), 0 10px 10px -5px rgba(11, 37, 69, 0.06);
+
+  --radius-ag-sm: 4px;
+  --radius-ag-md: 6px;
+  --radius-ag-lg: 8px;
+}
+
+:root {
+  --focus-ring: 0 0 0 2px #F7FAFC, 0 0 0 4px #2EA9C4;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--color-surface-bg, #F7FAFC);
+  color: var(--color-agText-primary, #1A2733);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.ticket-code {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #F1F5F9;
+}
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
+
+.elevation-base {
+  background-color: #FFFFFF;
+  border: 1px solid #E2E8F0;
+}
+.elevation-raised {
+  background-color: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  box-shadow: 0 4px 6px -1px rgba(11, 37, 69, 0.06), 0 2px 4px -1px rgba(11, 37, 69, 0.03);
+}
+.elevation-elevated {
+  background-color: #FFFFFF;
+  border: 1px solid #CBD5E1;
+  box-shadow: 0 10px 15px -3px rgba(11, 37, 69, 0.08), 0 4px 6px -2px rgba(11, 37, 69, 0.04);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
