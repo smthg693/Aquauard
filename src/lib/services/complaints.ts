@@ -158,6 +158,28 @@ export async function createComplaint(input: CreateComplaintInput): Promise<{ su
         return { success: false, message: 'User session unauthenticated. Please log in.' };
       }
 
+      // Ensure public.users profile exists in PostgreSQL before complaints insert
+      try {
+        const { data: existingProfile } = await supabase
+          .from('users')
+          .select('id')
+          .eq('id', citizenId)
+          .maybeSingle();
+
+        if (!existingProfile && authUser) {
+          await supabase.from('users').upsert({
+            id: citizenId,
+            name: authUser.user_metadata?.name || input.citizenName || authUser.email?.split('@')[0] || 'Citizen',
+            email: authUser.email || '',
+            phone: authUser.user_metadata?.phone || '',
+            role: 'Citizen',
+            account_status: 'active',
+          }, { onConflict: 'id' });
+        }
+      } catch (e) {
+        console.warn('Pre-complaint profile check notice:', e);
+      }
+
       const { data, error } = await supabase
         .from('complaints')
         .insert({

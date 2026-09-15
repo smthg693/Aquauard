@@ -202,6 +202,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         if (error) {
           setIsLoading(false);
+          const lower = error.message.toLowerCase();
+          if (lower.includes('rate limit')) {
+            return {
+              success: false,
+              message: 'Registration email limit exceeded. Please wait a few minutes before trying again, or disable "Confirm email" in Supabase Auth settings during dev.',
+            };
+          }
           return { success: false, message: error.message };
         }
 

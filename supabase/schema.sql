@@ -127,7 +127,7 @@ RETURNS TRIGGER AS $$
 BEGIN
   RAISE EXCEPTION 'Status history events are append-only and cannot be altered or deleted.';
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
 DROP TRIGGER IF EXISTS trg_prevent_status_history_update ON public.complaint_status_events;
 CREATE TRIGGER trg_prevent_status_history_update
@@ -279,11 +279,8 @@ DROP POLICY IF EXISTS "Users can insert own record on registration" ON public.us
 CREATE POLICY "Users can view own profile or Admins view all"
   ON public.users FOR SELECT
   USING (
-    id = auth.uid() OR 
-    EXISTS (
-      SELECT 1 FROM public.users u
-      WHERE u.id = auth.uid() AND u.role IN ('Admin', 'Authority')
-    )
+    id = auth.uid() OR
+    public.get_current_role() IN ('Admin', 'Authority')
   );
 
 CREATE POLICY "Users can update own profile"
@@ -293,6 +290,22 @@ CREATE POLICY "Users can update own profile"
 CREATE POLICY "Users can insert own record on registration"
   ON public.users FOR INSERT
   WITH CHECK (id = auth.uid() AND role = 'Citizen');
+
+-- Trigger to prevent role tampering on public.users
+CREATE OR REPLACE FUNCTION prevent_user_role_change()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.role IS DISTINCT FROM OLD.role AND COALESCE(public.get_current_role(), 'Citizen') != 'Admin' THEN
+    RAISE EXCEPTION 'Users cannot alter their assigned system role.';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+DROP TRIGGER IF EXISTS trg_prevent_user_role_change ON public.users;
+CREATE TRIGGER trg_prevent_user_role_change
+BEFORE UPDATE ON public.users
+FOR EACH ROW EXECUTE FUNCTION prevent_user_role_change();
 
 -- 6.2 OFFICERS RLS
 DROP POLICY IF EXISTS "Officers readable by authenticated users" ON public.officers;
@@ -332,7 +345,7 @@ CREATE POLICY "Citizens can create complaints"
   ON public.complaints FOR INSERT
   WITH CHECK (
     citizen_id = auth.uid() AND
-    public.get_current_role() = 'Citizen'
+    COALESCE(public.get_current_role(), 'Citizen') = 'Citizen'
   );
 
 CREATE POLICY "Authority and Officers can update permitted complaint states"
@@ -476,17 +489,42 @@ CREATE POLICY "System can insert notifications"
     public.get_current_role() IN ('Authority', 'Admin', 'Field Officer')
   );
 
--- 7. STORAGE BUCKET POLICIES FOR 'evidence' BUCKET
+-- 7. STORAGE BUCKET POLICIES FOR 'complaint-evidence' AND 'evidence' BUCKETS
 INSERT INTO storage.buckets (id, name, public) 
-VALUES ('evidence', 'evidence', true)
+VALUES 
+  ('complaint-evidence', 'complaint-evidence', true),
+  ('evidence', 'evidence', true)
 ON CONFLICT (id) DO NOTHING;
 
-DROP POLICY IF EXISTS "Evidence storage select for authenticated users" ON storage.objects;
-CREATE POLICY "Evidence storage select for authenticated users"
+DROP POLICY IF EXISTS "Public read access for complaint evidence" ON storage.objects;
+CREATE POLICY "Public read access for complaint evidence"
   ON storage.objects FOR SELECT
-  USING (bucket_id = 'evidence' AND auth.role() = 'authenticated');
+  USING (bucket_id IN ('complaint-evidence', 'evidence'));
 
-DROP POLICY IF EXISTS "Evidence storage upload for authenticated users" ON storage.objects;
-CREATE POLICY "Evidence storage upload for authenticated users"
+DROP POLICY IF EXISTS "Authenticated users can upload complaint evidence" ON storage.objects;
+CREATE POLICY "Authenticated users can upload complaint evidence"
   ON storage.objects FOR INSERT
-  WITH CHECK (bucket_id = 'evidence' AND auth.role() = 'authenticated');
+  TO authenticated
+  WITH CHECK (
+    bucket_id IN ('complaint-evidence', 'evidence') AND
+    (
+      (storage.foldername(name))[1] IS NOT NULL AND
+      EXISTS (
+        SELECT 1 FROM public.complaints c
+        WHERE c.id::text = (storage.foldername(name))[1]
+          AND (
+            c.citizen_id = auth.uid() OR
+            public.get_current_role() IN ('Admin', 'Authority', 'Field Officer')
+          )
+      )
+    )
+  );
+
+-- 8. REALTIME SUBSCRIPTION PUBLICATION
+ALTER TABLE public.complaints REPLICA IDENTITY FULL;
+ALTER TABLE public.complaint_status_events REPLICA IDENTITY FULL;
+ALTER TABLE public.notifications REPLICA IDENTITY FULL;
+
+ALTER PUBLICATION supabase_realtime ADD TABLE public.complaints;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.complaint_status_events;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.notifications;
